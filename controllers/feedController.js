@@ -6,25 +6,39 @@ const CACHE_TTL = 300; // 5 minutes
 
 export const getFeeds = async (req, res) => {
   try {
-    // Try to get from Redis cache first
-    const cachedFeeds = await redisClient.get(CACHE_KEY);
-    if (cachedFeeds) {
-      console.log("📦 Returning feeds from cache");
-      return res.status(200).json({
-        success: true,
-        message: "Feeds retrieved from cache",
-        data: JSON.parse(cachedFeeds),
-      });
+    const isRedisReady = redisClient && redisClient.isOpen;
+
+    if (isRedisReady) {
+      try {
+        // Try to get from Redis cache first
+        const cachedFeeds = await redisClient.get(CACHE_KEY);
+        if (cachedFeeds) {
+          console.log("📦 Returning feeds from cache");
+          return res.status(200).json({
+            success: true,
+            message: "Feeds retrieved from cache",
+            data: JSON.parse(cachedFeeds),
+          });
+        }
+      } catch (redisErr) {
+        console.error("⚠️ Redis GET error, falling back to DB:", redisErr.message);
+      }
     }
 
-    // If not in cache, fetch from MongoDB
+    // If not in cache or Redis is down, fetch from MongoDB
     console.log("📡 Fetching feeds from database");
     const feeds = await Feed.find({ isActive: true })
       .sort({ createdAt: -1 })
       .lean();
 
-    // Store in Redis cache
-    await redisClient.setEx(CACHE_KEY, CACHE_TTL, JSON.stringify(feeds));
+    if (isRedisReady) {
+      try {
+        // Store in Redis cache
+        await redisClient.setEx(CACHE_KEY, CACHE_TTL, JSON.stringify(feeds));
+      } catch (redisErr) {
+        console.error("⚠️ Redis SET error:", redisErr.message);
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -63,9 +77,15 @@ export const createFeed = async (req, res) => {
 
     const savedFeed = await newFeed.save();
 
-    // Clear the cache
-    await redisClient.del(CACHE_KEY);
-    console.log("🗑️ Cache cleared");
+    // Clear the cache safely
+    if (redisClient && redisClient.isOpen) {
+      try {
+        await redisClient.del(CACHE_KEY);
+        console.log("🗑️ Cache cleared");
+      } catch (redisErr) {
+        console.error("⚠️ Redis DEL error:", redisErr.message);
+      }
+    }
 
     return res.status(201).json({
       success: true,

@@ -18,10 +18,31 @@ const io = new Server(server, {
   },
 });
 
-// Redis client
-export const redisClient = createClient({
-  url: process.env.REDIS_URL || "redis://localhost:6379",
-});
+// Redis client with robust error & protocol safety parsing
+const getSafeRedisClient = () => {
+  let redisUrl = process.env.REDIS_URL;
+  
+  if (redisUrl) {
+    redisUrl = redisUrl.trim();
+    // Safely verify and prepends protocol if missing (a common Render configuration mistake)
+    if (!redisUrl.startsWith("redis://") && !redisUrl.startsWith("rediss://")) {
+      console.warn("⚠️ REDIS_URL is missing protocol prefix. Prepending 'redis://'.");
+      redisUrl = `redis://${redisUrl}`;
+    }
+  } else {
+    redisUrl = "redis://localhost:6379";
+  }
+
+  try {
+    console.log("📡 Initializing Redis client connection URL:", redisUrl.replace(/:[^:]*@/, ":****@")); // Safe masking of password
+    return createClient({ url: redisUrl });
+  } catch (err) {
+    console.error("❌ Failed to parse REDIS_URL configuration, falling back to local default:", err.message);
+    return createClient({ url: "redis://localhost:6379" });
+  }
+};
+
+export const redisClient = getSafeRedisClient();
 
 // Middleware
 app.use(cors());
@@ -39,14 +60,14 @@ const connectDB = async () => {
   }
 };
 
-// Redis Connection
+// Redis Connection (Resilient connection - does not crash Express server if cache is offline)
 const connectRedis = async () => {
   try {
     await redisClient.connect();
     console.log("✅ Redis connected successfully");
   } catch (error) {
-    console.error("❌ Redis connection failed:", error);
-    process.exit(1);
+    console.error("⚠️ Redis connection failed. Backend will run transparently without caching:", error.message);
+    // Do not call process.exit(1) so that the Express server continues running online!
   }
 };
 
